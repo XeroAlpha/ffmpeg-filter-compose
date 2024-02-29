@@ -2,6 +2,14 @@
 
 [Filtergraph](https://ffmpeg.org/ffmpeg-filters.html#Filtergraph-description) generator with composing API for [FFmpeg](https://ffmpeg.org/).
 
+## Install
+
+NPM: [ffmpeg-filter-compose](https://www.npmjs.com/package/ffmpeg-filter-compose)
+
+```
+npm i ffmpeg-filter-compose
+```
+
 ## Usage
 
 Basic chain:
