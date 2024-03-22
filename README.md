@@ -65,12 +65,12 @@ filterComplex(({ from, input, filter }) => {
 
 Complex example:
 ```js
-filterComplex(({ from, pipe, filter }) => {
+filterComplex(({ from, use, pipe, filter }) => {
     const L1 = pipe('L1');
     const L2 = pipe('L2');
-    from().pipe(filter.testsrc)
-        .link(from().pipe(filter.split).connect(L1))
-        .link(from().pipe(filter.hflip).connect(L2));
+    use(filter.testsrc)
+        .link(use(filter.split).connect(L1))
+        .link(use(filter.hflip).connect(L2));
     const [out] = from(L1, L2).pipe(filter.hstack);
     return { out };
 })

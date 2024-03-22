@@ -10,6 +10,7 @@ export type FilterMap = Record<string, FilterFunction>;
 
 export interface FilterComplexContext {
   readonly from: (...labels: Pipe[]) => ChainNode;
+  readonly use: (filterOrFunc: Filter | FilterFunction) => ChainNode;
   readonly pipe: (name?: string) => Pipe;
   readonly recycle: (...labels: (Pipe | null | undefined)[]) => void;
   readonly split: (pipe: Pipe) => Iterable<Pipe>;
@@ -86,7 +87,6 @@ export class Pipe {
     return `[${this.name}]`;
   }
 
-  /** @internal */
   inspect() {
     if (this.hintText) {
       return `[${this.name}](${this.hintText})`;
@@ -206,17 +206,17 @@ function parseFilterArguments(args: FilterArgument[]): string {
 
 export function escapeFilterArgument(arg: string, quote?: boolean): string {
   if (quote) {
-    const quoteParts = arg.split("'");
+    const quoteParts = arg.split(/([\\',])/);
     return quoteParts
-      .filter((e) => e !== '')
-      .map((e) => `'${e}'`)
-      .join("\\'");
+      .map((e, i) => i % 2 === 0 ? (e !== '' ? `'${e}'` : '') : `\\${e}`)
+      .join('');
   }
   return arg.replace(/[\\'[\],;]/g, '\\$&');
 }
 
 export class Filter {
-  name: string;
+  readonly name: string;
+  id?: string;
   arguments?: string;
 
   /** @internal */
@@ -227,6 +227,11 @@ export class Filter {
     }
   }
 
+  ref(id: string) {
+    this.id = id;
+    return this;
+  }
+
   setArguments(...args: FilterArgument[]) {
     if (args.length > 0) {
       this.arguments = parseFilterArguments(args);
@@ -235,18 +240,22 @@ export class Filter {
     }
   }
 
-  toString() {
-    if (this.arguments !== undefined) {
-      return `${this.name}=${escapeFilterArgument(this.arguments, true)}`;
+  toString(withArguments?: boolean) {
+    const name = `${this.name}${this.id ? `@${this.id}` : ''}`;
+    if (withArguments && this.arguments !== undefined) {
+      return `${name}=${escapeFilterArgument(this.arguments, true)}`;
     }
-    return this.name;
+    return name;
   }
 }
 
+const FilterNameSymbol = Symbol('filterName');
 const FilterProxy = createCachedGetterProxy<Record<string, FilterFunction>>({}, (filterName) => {
-  return (...args: FilterArgument[]) => {
+  const filterFunc = (...args: FilterArgument[]) => {
     return new Filter(filterName as string, args);
   };
+  filterFunc[FilterNameSymbol] = filterName;
+  return filterFunc;
 });
 const NullFilterMap: Partial<Record<PipeMediaType, Filter>> = {
   video: FilterProxy.null(),
@@ -267,37 +276,41 @@ export class ChainNode implements Iterable<Pipe> {
   /** @internal */
   source: Pipe[];
   /** @internal */
-  filter: Filter | null;
+  filter?: Filter;
+  /** @internal */
+  swsFlags?: string;
   /** @internal */
   destination: Pipe[];
   /** @internal */
-  prev: ChainNode | null;
+  prev?: ChainNode;
   /** @internal */
-  next: ChainNode | null;
+  next?: ChainNode;
 
   /** @internal */
   constructor(helper: FilterComplexHelper, source: Pipe[]) {
     this.helper = helper;
     this.source = source;
-    this.filter = null;
+    this.filter = undefined;
+    this.swsFlags = undefined;
     this.destination = [];
-    this.prev = null;
-    this.next = null;
+    this.prev = undefined;
+    this.next = undefined;
     source.forEach((p) => this.helper.checkPipe(p));
   }
 
-  pipe(filterOrFunc: Filter | FilterFunction) {
+  pipe(filterOrFunc: Filter | FilterFunction, swsFlags?: string) {
     if (this.next) {
       throw new Error(`This chain has been linked to another filter`);
     }
     const filter = typeof filterOrFunc === 'function' ? filterOrFunc() : filterOrFunc;
     if (!this.filter) {
       this.filter = filter;
+      this.swsFlags = swsFlags;
       this.source.forEach((p) => p.setBoundOutput());
       return this;
     }
     const next = new ChainNode(this.helper, []);
-    next.pipe(filter);
+    next.pipe(filter, swsFlags);
     this.next = next;
     next.prev = this;
     return next;
@@ -379,7 +392,11 @@ export class ChainNode implements Iterable<Pipe> {
   /** @internal */
   toString() {
     if (this.filter) {
-      return `${this.source.join('')}${this.filter}${this.destination.join('')}`;
+      const swsFlags = this.swsFlags ? `sws_flags=${this.swsFlags};` : '';
+      const sources = this.source.join('');
+      const filter = this.filter.toString(true);
+      const destinations = this.destination.join('');
+      return `${swsFlags}${sources}${filter}${destinations}`;
     }
     return '';
   }
@@ -387,7 +404,7 @@ export class ChainNode implements Iterable<Pipe> {
 
 export function traverseChainNodes(chain: ChainNode) {
   const nodes: ChainNode[] = [];
-  let cursor: ChainNode | null = chain;
+  let cursor: ChainNode | undefined = chain;
   while (cursor && !nodes.includes(cursor)) {
     nodes.push(cursor);
     cursor = cursor.next;
@@ -471,6 +488,7 @@ class FilterComplexHelper {
   getContext(): FilterComplexContext {
     return {
       from: (...source) => this.createChain(source),
+      use: (filterOrFunc) => this.createChain([]).pipe(filterOrFunc),
       pipe: (name) => this.createPipe(name),
       recycle: (...pipes) => this.sinkPipes(pipes),
       split: (pipe) => this.splitPipe(pipe),
@@ -549,13 +567,13 @@ class FilterComplexHelper {
     return this.chains
       .map((chain) => {
         const nodes = traverseChainNodes(chain);
-        const strippedNodes = nodes.filter((n) => n.filter !== null);
+        const strippedNodes = nodes.filter((n) => n.filter !== undefined);
         if (strippedNodes.length === 0) {
-          return null;
+          return undefined;
         }
         return strippedNodes.join(',');
       })
-      .filter((s) => s !== null)
+      .filter((s) => s !== undefined)
       .join(';');
   }
 
