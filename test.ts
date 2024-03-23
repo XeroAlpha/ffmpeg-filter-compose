@@ -1,5 +1,11 @@
 import { strict as assert } from 'assert';
-import { filterComplex } from './index';
+import { FilterComplexContext, filterComplex } from './index';
+
+declare module './index' {
+    interface FilterComplexContext {
+        hflip: () => Filter;
+    }
+}
 
 (async function() {
     assert.equal(
@@ -69,4 +75,17 @@ import { filterComplex } from './index';
         }),
         `testsrc,split[L1],hflip[L2];[L1][L2]hstack[out]`
     );
-})()
+
+    FilterComplexContext.hflip = function() {
+        return this.filter.hflip();
+    }
+    assert.equal(
+        filterComplex(({ from, input, hflip }) => {
+            const [out] = from(input[0].v).pipe(hflip());
+            return { out };
+        }),
+        `[0:v]hflip[out]`
+    );
+
+    console.log('Test passed!');
+})();

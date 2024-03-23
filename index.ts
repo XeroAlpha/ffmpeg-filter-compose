@@ -9,18 +9,72 @@ export type InputFileStreamMap = IterableStreamLikeArray<Pipe> & Record<string, 
 export type FilterMap = Record<string, FilterFunction>;
 
 export interface FilterComplexContext {
-  readonly from: (...labels: Pipe[]) => ChainNode;
-  readonly use: (filterOrFunc: Filter | FilterFunction) => ChainNode;
-  readonly pipe: (name?: string) => Pipe;
-  readonly recycle: (...labels: (Pipe | null | undefined)[]) => void;
-  readonly split: (pipe: Pipe) => Iterable<Pipe>;
-  readonly input: Readonly<IterableStreamLikeArray<Readonly<InputFileStreamMap>>>;
-  readonly filter: Readonly<FilterMap>;
-  readonly fileArgument: (path: string) => FileArgument;
+  /**
+   * Build an empty filter chain.
+   * 
+   * @param labels Pipes that will connect to input pads of chain.
+   * @returns The start node of the filter chain.
+   */
+  from: (...labels: Pipe[]) => ChainNode;
+
+  /**
+   * Build a filter chain that sourced from the specified filter.
+   * 
+   * @param filterOrFunc Filter or its factory.
+   * @returns The start node of the filter chain.
+   */
+  use: (filterOrFunc: Filter | FilterFunction) => ChainNode;
+
+  /**
+   * Create a pipe.
+   * 
+   * @param name Name of pipe. Must be unique.
+   * @returns The created pipe.
+   */
+  pipe: (name?: string) => Pipe;
+
+  /**
+   * Connect pipes to corresponding null filter if their outputs are not connected.
+   * 
+   * @param labels Pipes to be connected. Can be `null` or `undefined`.
+   */
+  recycle: (...labels: (Pipe | null | undefined)[]) => void;
+
+  /**
+   * Connect the specified pipe to corresponding split filter.
+   * This allows data to flows into multiple filters.
+   * 
+   * @param pipe Pipe.
+   * @returns Split pipes.
+   */
+  split: (pipe: Pipe) => Iterable<Pipe>;
+
+  /**
+   * Input streams.
+   */
+  input: Readonly<IterableStreamLikeArray<Readonly<InputFileStreamMap>>>;
+
+  /**
+   * Filters.
+   */
+  filter: Readonly<FilterMap>;
+
+  /**
+   * Read argument from a file and pass to the filter.
+   * 
+   * @param path File path.
+   * @returns The file argument that can be passed to `FilterFunction`.
+   */
+  fileArgument: (path: string) => FileArgument;
 }
+
+export const FilterComplexContext = {} as FilterComplexContext;
 
 export type PipeMediaType = 'unknown' | 'video' | 'audio' | 'data' | 'subtitle' | 'attachment' | 'nb';
 
+/**
+ * Represents the pipe (link) between filter pads.
+ */
 export class Pipe {
   /** @internal */
   name: string;
@@ -43,15 +97,27 @@ export class Pipe {
     this.fixed = fixed ?? false;
   }
 
-  as(newName: string) {
+  /**
+   * Give this pipe an unique name in order to refer to it elsewhere.
+   * 
+   * This will throw an error if the pipe already has a name.
+   * 
+   * @param name Name of the pipe.
+   */
+  as(name: string) {
     if (this.fixed) {
       throw new Error(`Cannot rename a fixed pipe: ${this.inspect()}`);
     }
-    this.name = newName;
+    this.name = name;
     this.fixed = true;
     return this;
   }
 
+  /**
+   * Mark this pipe with the specified media type.
+   * 
+   * @param mediaType Media type.
+   */
   mark(mediaType: PipeMediaType) {
     if (this.mediaType !== 'unknown') {
       throw new Error(`Cannot mark this pipe as ${mediaType}, since it has been marked as ${this.mediaType}`);
@@ -60,22 +126,39 @@ export class Pipe {
     return this;
   }
 
+  /**
+   * Set the hint of the pipe.
+   * 
+   * It will be used in error messages.
+   * 
+   * @param hint Hint
+   */
   hint(hint: string) {
     this.hintText = hint;
     return this;
   }
 
+  /**
+   * Notify that the input side of the pipe is connected to another pad.
+   * 
+   * This will throw an error if the input side has already been connected.
+   */
   setBoundInput() {
     if (this.boundInput) {
-      throw new Error(`Pipe ${this.inspect()} has been bound to output`);
+      throw new Error(`Pipe ${this.inspect()} has been bound to other output pad`);
     }
     this.boundInput = true;
     return this;
   }
 
+  /**
+   * Notify that the output side of the pipe is connected to another pad.
+   * 
+   * This will throw an error if the output side has already been connected.
+   */
   setBoundOutput() {
     if (this.boundOutput) {
-      throw new Error(`Pipe ${this.inspect()} has been bound to input, please use split or asplit filter`);
+      throw new Error(`Pipe ${this.inspect()} has been bound to other input pad, please use split or asplit filter`);
     }
     if (!this.shared) {
       this.boundOutput = true;
@@ -83,6 +166,9 @@ export class Pipe {
     return this;
   }
 
+  /**
+   * Return the string representation of this pipe (e.g. `[pipe]`).
+   */
   toString() {
     return `[${this.name}]`;
   }
@@ -163,7 +249,7 @@ const InputProxy = createCachedGetterProxy<IterableStreamLikeArray<InputFileStre
 );
 
 export class FileArgument {
-  path: string;
+  readonly path: string;
 
   /** @internal */
   constructor(path: string) {
@@ -214,9 +300,15 @@ export function escapeFilterArgument(arg: string, quote?: boolean): string {
   return arg.replace(/[\\'[\],;]/g, '\\$&');
 }
 
+/**
+ * Represents a filter in the filtergraph.
+ */
 export class Filter {
+  /** @internal */
   readonly name: string;
+  /** @internal */
   id?: string;
+  /** @internal */
   arguments?: string;
 
   /** @internal */
@@ -227,11 +319,19 @@ export class Filter {
     }
   }
 
+  /**
+   * Set the instance name to distinguish it from other filters.
+   * 
+   * @param id Instance name.
+   */
   ref(id: string) {
     this.id = id;
     return this;
   }
 
+  /**
+   * Update the arguments for this filter.
+   */
   setArguments(...args: FilterArgument[]) {
     if (args.length > 0) {
       this.arguments = parseFilterArguments(args);
@@ -240,6 +340,9 @@ export class Filter {
     }
   }
 
+  /**
+   * Return the string representation of this filter (e.g. `name@id`).
+   */
   toString(withArguments?: boolean) {
     const name = `${this.name}${this.id ? `@${this.id}` : ''}`;
     if (withArguments && this.arguments !== undefined) {
@@ -270,6 +373,11 @@ const SplitMap: Partial<Record<PipeMediaType, FilterFunction>> = {
   audio: FilterProxy.asplit,
 };
 
+/**
+ * Represents a node in the filter chain.
+ * 
+ * Iterate over this object to retrieve pipes connected to the output pads.
+ */
 export class ChainNode implements Iterable<Pipe> {
   /** @internal */
   helper: FilterComplexHelper;
@@ -298,6 +406,16 @@ export class ChainNode implements Iterable<Pipe> {
     source.forEach((p) => this.helper.checkPipe(p));
   }
 
+  /**
+   * Append a filter node to the filter chain.
+   * 
+   * If this node is a start node, it will be replaced by
+   * the appended node.
+   * 
+   * @param filterOrFunc Filter or its filter factory.
+   * @param swsFlags Flags that will be passed to swscale filters.
+   * @returns The appended node.
+   */
   pipe(filterOrFunc: Filter | FilterFunction, swsFlags?: string) {
     if (this.next) {
       throw new Error(`This chain has been linked to another filter`);
@@ -316,6 +434,12 @@ export class ChainNode implements Iterable<Pipe> {
     return next;
   }
 
+  /**
+   * Build a new filter chain and connect its input to the output pads of this filter chain.
+   * 
+   * @param connectedPipeCount Number of pipes to be passed to the new filter chain.
+   * @returns The start node of the new filter chain.
+   */
   fork(connectedPipeCount: number) {
     if (this.next) {
       throw new Error(`This chain has been linked to another filter`);
@@ -341,6 +465,11 @@ export class ChainNode implements Iterable<Pipe> {
     return fork;
   }
 
+  /**
+   * Connect pipes to the output pads.
+   * 
+   * @param pipes Pipes to be connected.
+   */
   connect(...pipes: Pipe[]) {
     if (!this.filter) {
       throw new Error(`Cannot connect empty chain to output`);
@@ -357,6 +486,11 @@ export class ChainNode implements Iterable<Pipe> {
     return this;
   }
 
+  /**
+   * Join this filter chain with another filter chain.
+   * @param node Last node of the other filter chain
+   * @returns Last node of the joined filter chain
+   */
   link(node: ChainNode): ChainNode {
     if (this.next) {
       throw new Error(`This chain has already connected to output`);
@@ -368,6 +502,9 @@ export class ChainNode implements Iterable<Pipe> {
     return node;
   }
 
+  /**
+   * Return an iterator that can retrieve pipes connected to the output pads.
+   */
   *[Symbol.iterator](): Iterator<Pipe> {
     if (!this.filter) {
       for (const pipe of this.source) {
@@ -485,8 +622,8 @@ class FilterComplexHelper {
     }
   }
 
-  getContext(): FilterComplexContext {
-    return {
+  getContext() {
+    const ctx = {
       from: (...source) => this.createChain(source),
       use: (filterOrFunc) => this.createChain([]).pipe(filterOrFunc),
       pipe: (name) => this.createPipe(name),
@@ -495,7 +632,15 @@ class FilterComplexHelper {
       input: InputProxy,
       filter: FilterProxy,
       fileArgument: FileArgumentFactory,
-    };
+    } as Partial<FilterComplexContext>;
+    Object.entries(FilterComplexContext).forEach(([k, v]) => {
+      let value = v;
+      if (typeof value === 'function') {
+        value = value.bind(ctx);
+      }
+      (ctx as any)[k] = value;
+    });
+    return ctx as Readonly<FilterComplexContext>;
   }
 
   renamePipes(map: Record<string, Pipe>) {
@@ -587,6 +732,11 @@ class FilterComplexHelper {
   }
 }
 
+/**
+ * Invoke the specified function `f` within a special context and return the generated filtergraph.
+ * 
+ * Pipes returned by `f` will be named and exported.
+ */
 export function filterComplex(f: (c: FilterComplexContext) => void | Record<string, Pipe>): string;
 export function filterComplex(f: (c: FilterComplexContext) => Promise<void | Record<string, Pipe>>): Promise<string>;
 export function filterComplex(

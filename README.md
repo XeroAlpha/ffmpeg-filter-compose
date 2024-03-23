@@ -10,7 +10,7 @@ NPM: [ffmpeg-filter-compose](https://www.npmjs.com/package/ffmpeg-filter-compose
 npm i ffmpeg-filter-compose
 ```
 
-## Usage
+## Examples
 
 Basic chain:
 ```js
@@ -75,6 +75,25 @@ filterComplex(({ from, use, pipe, filter }) => {
     return { out };
 })
 // => `testsrc,split[L1],hflip[L2];[L1][L2]hstack[out]`
+```
+
+Extension:
+```ts
+declare module 'ffmpeg-filter-compose' {
+    interface FilterComplexContext {
+        hflip: () => Filter;
+    }
+}
+
+FilterComplexContext.hflip = function() {
+    return this.filter.hflip();
+}
+
+filterComplex(({ from, input, hflip }) => {
+    const [out] = from(input[0].v).pipe(hflip());
+    return { out };
+})
+// => `[0:v]hflip[out]`
 ```
 
 ## FAQ
