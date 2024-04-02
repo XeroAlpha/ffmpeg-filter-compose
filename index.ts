@@ -50,6 +50,14 @@ export interface FilterComplexContext {
   split: (pipe: Pipe) => Iterable<Pipe>;
 
   /**
+   * Concatenate video and audio streams, joining them together one after another.
+   * @param videoStreams Segments in the video streams.
+   * @param audioStreams Segments in the audio streams.
+   * @returns A builder for further operations.
+   */
+  concat: (videoStreams?: Pipe[][], audioStreams?: Pipe[][]) => ConcatFilterBuilder;
+
+  /**
    * Input streams.
    */
   input: Readonly<IterableStreamLikeArray<Readonly<InputFileStreamMap>>>;
@@ -372,6 +380,7 @@ const SplitMap: Partial<Record<PipeMediaType, FilterFunction>> = {
   video: FilterProxy.split,
   audio: FilterProxy.asplit,
 };
+const ConcatFilter = FilterProxy.concat;
 
 /**
  * Represents a node in the filter chain.
@@ -539,6 +548,146 @@ export class ChainNode implements Iterable<Pipe> {
   }
 }
 
+/**
+ * Helper for building a `concat` filter chain.
+ */
+export class ConcatFilterBuilder implements Iterable<Pipe> {
+  /** @internal */
+  helper: FilterComplexHelper;
+  /** @internal */
+  videoStreams: Pipe[][];
+  /** @internal */
+  audioStreams: Pipe[][];
+  /** @internal */
+  outputPipes?: Pipe[];
+  /** @internal */
+  constructor(helper: FilterComplexHelper) {
+    this.helper = helper;
+    this.videoStreams = [];
+    this.audioStreams = [];
+  }
+
+  /**
+   * Join synchronized video segments into a video stream.
+   *
+   * This method should not be used with `segment()`.
+   * @param pipes The synchronized video segments.
+   */
+  video(...pipes: Pipe[]) {
+    if (this.outputPipes) {
+      throw new Error(`Cannot modify a completed builder.`);
+    }
+    this.helper.checkPipes(pipes);
+    const firstVideoPipeStream = this.videoStreams[0];
+    if (firstVideoPipeStream && firstVideoPipeStream.length !== pipes.length) {
+      throw new Error(`Should provide exactly ${firstVideoPipeStream.length} segments.`);
+    }
+    this.videoStreams.push([...pipes]);
+    return this;
+  }
+
+  /**
+   * Join synchronized audio segments into an audio stream.
+   *
+   * This method should not be used with `segment()`.
+   * @param pipes The synchronized audio segments.
+   */
+  audio(...pipes: Pipe[]) {
+    if (this.outputPipes) {
+      throw new Error(`Cannot modify a completed builder.`);
+    }
+    this.helper.checkPipes(pipes);
+    const firstAudioPipeStream = this.audioStreams[0];
+    if (firstAudioPipeStream && firstAudioPipeStream.length !== pipes.length) {
+      throw new Error(`Should provide exactly ${firstAudioPipeStream.length} segments.`);
+    }
+    this.audioStreams.push([...pipes]);
+    return this;
+  }
+
+  /**
+   * Add a segment with synchronized video and audio streams.
+   *
+   * This method should not be used with `video()` and `audio()`.
+   * @param videoPipes The synchronized video streams.
+   * @param audioPipes The synchronized audio streams.
+   */
+  segment(videoPipes: Pipe[], audioPipes: Pipe[]) {
+    if (this.outputPipes) {
+      throw new Error(`Cannot modify a completed builder.`);
+    }
+    this.helper.checkPipes(videoPipes);
+    this.helper.checkPipes(audioPipes);
+    const videoStreamCount = this.videoStreams.length;
+    const audioStreamCount = this.audioStreams.length;
+    if (videoStreamCount > 0 || audioStreamCount > 0) {
+      if (videoStreamCount !== videoPipes.length || audioStreamCount !== audioPipes.length) {
+        throw new Error(`Should provide exactly ${videoStreamCount} video stream(s) and ${audioStreamCount} audio stream(s).`);
+      }
+      for (let i = 0; i < videoStreamCount; i++) {
+        this.videoStreams[i].push(videoPipes[i]);
+      }
+      for (let i = 0; i < audioStreamCount; i++) {
+        this.audioStreams[i].push(audioPipes[i]);
+      }
+    } else {
+      for (const videoPipe of videoPipes) {
+        this.videoStreams.push([videoPipe]);
+      }
+      for (const audioPipe of audioPipes) {
+        this.audioStreams.push([audioPipe]);
+      }
+    }
+    return this;
+  }
+
+  /**
+   * Build a `concat` chain and return the concatenated output pipes.
+   * @returns An array of `Pipe`, representing `[...videoStreams, ...audioStreams]`.
+   */
+  build() {
+    if (this.outputPipes) {
+      return this.outputPipes;
+    }
+    const streams = [...this.videoStreams, ...this.audioStreams];
+    if (streams.length === 0) {
+      throw new Error(`Should provide at least 1 video/audio segment.`);
+    }
+    const outputPipes: Pipe[] = [];
+    const videoStreamCount = this.videoStreams.length;
+    const audioStreamCount = this.audioStreams.length;
+    let segmentCount = Infinity;
+    for (const segments of streams) {
+      segmentCount = Math.min(segments.length, segmentCount);
+      outputPipes.push(this.helper.createPipe());
+    }
+    const chainSource: Pipe[] = [];
+    for (let i = 0; i < segmentCount; i++) {
+      chainSource.push(...streams.map((stream) => stream[i]));
+    }
+    outputPipes.forEach((pipe, i) => {
+      if (i >= videoStreamCount) {
+        pipe.mark('audio');
+      } else {
+        pipe.mark('video');
+      }
+    })
+    this.helper.createChain(chainSource)
+      .pipe(ConcatFilter({
+        n: segmentCount,
+        v: videoStreamCount,
+        a: audioStreamCount
+      }))
+      .connect(...outputPipes);
+    this.outputPipes = outputPipes;
+    return outputPipes;
+  }
+
+  [Symbol.iterator]() {
+    return this.build()[Symbol.iterator]();
+  }
+}
+
 export function traverseChainNodes(chain: ChainNode) {
   const nodes: ChainNode[] = [];
   let cursor: ChainNode | undefined = chain;
@@ -577,6 +726,12 @@ class FilterComplexHelper {
     }
   }
 
+  checkPipes(pipes: Pipe[]) {
+    for (const pipe of pipes) {
+      this.checkPipe(pipe);
+    }
+  }
+
   createChain(source: Pipe[]) {
     const chain = new ChainNode(this, source);
     this.addChain(chain);
@@ -601,6 +756,21 @@ class FilterComplexHelper {
     if (toChainIndex > 0) {
       this.chains.splice(toChainIndex, 1);
     }
+  }
+
+  concatPipe(videoStreams?: Pipe[][], audioStreams?: Pipe[][]) {
+    const builder = new ConcatFilterBuilder(this);
+    if (videoStreams) {
+      for (const videoStream of videoStreams) {
+        builder.video(...videoStream);
+      }
+    }
+    if (audioStreams) {
+      for (const audioStream of audioStreams) {
+        builder.audio(...audioStream);
+      }
+    }
+    return builder;
   }
 
   *splitPipe(pipe: Pipe) {
@@ -629,6 +799,7 @@ class FilterComplexHelper {
       pipe: (name) => this.createPipe(name),
       recycle: (...pipes) => this.sinkPipes(pipes),
       split: (pipe) => this.splitPipe(pipe),
+      concat: (videoStreams, audioStreams) => this.concatPipe(videoStreams, audioStreams),
       input: InputProxy,
       filter: FilterProxy,
       fileArgument: FileArgumentFactory,

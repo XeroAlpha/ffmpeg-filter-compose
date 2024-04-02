@@ -51,16 +51,18 @@ await filterComplex(async ({ from, input, filter }) => {
 
 Apply fade-in effect, then concatenate videos:
 ```js
-filterComplex(({ from, input, filter }) => {
-    const videos = input.toArray(videoCount).map((e) => e.v);
-    const concatParts = videos.map((v) => {
-        const [fade] = from(v).pipe(filter.fade({ t: 'in', d: 1 }));
-        return fade;
-    });
-    const [out] = from(...concatParts).pipe(filter.concat({ n: videoCount, v: 1 }));
-    return { out };
+filterComplex(({ from, input, filter, concat }) => {
+    const inputArr = input.toArray(videoCount);
+    const [outv, outa] = concat()
+        .video(...inputArr.map((e) => e.v).map((v) => {
+            const [fade] = from(v).pipe(filter.fade({ t: 'in', d: 1 }));
+            return fade;
+        }))
+        .audio(...inputArr.map((e) => e.a))
+        .build();
+    return { outv, outa };
 })
-// => `[0:v]fade='t=in:d=1'[_1];[1:v]fade='t=in:d=1'[_2];[2:v]fade='t=in:d=1'[_3];[_1][_2][_3]concat='n=3:v=1'[out]`
+// => `[0:v]fade='t=in:d=1'[_1];[1:v]fade='t=in:d=1'[_2];[_1][0:a][_2][1:a]concat='n=2:v=1:a=1'[outv][outa]`
 ```
 
 Complex example:
