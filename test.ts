@@ -3,7 +3,7 @@ import { FilterComplexContext, filterComplex } from './index';
 
 declare module './index' {
     interface FilterComplexContext {
-        hflip: () => Filter;
+        select: (input: Pipe, expr: string) => Iterable<Pipe>;
     }
 }
 
@@ -52,14 +52,13 @@ declare module './index' {
     const videoCount = 2;
     assert.equal(
         filterComplex(({ from, input, filter, concat }) => {
-            const inputArr = input.toArray(videoCount);
+            const inputArr = input.pick(videoCount);
             const [outv, outa] = concat()
                 .video(...inputArr.map((e) => e.v).map((v) => {
                     const [fade] = from(v).pipe(filter.fade({ t: 'in', d: 1 }));
                     return fade;
                 }))
-                .audio(...inputArr.map((e) => e.a))
-                .build();
+                .audio(...inputArr.map((e) => e.a));
             return { outv, outa };
         }),
         `[0:v]fade='t=in:d=1'[_1];[1:v]fade='t=in:d=1'[_2];[_1][0:a][_2][1:a]concat='n=2:v=1:a=1'[outv][outa]`
@@ -78,15 +77,47 @@ declare module './index' {
         `testsrc,split[L1],hflip[L2];[L1][L2]hstack[out]`
     );
 
-    FilterComplexContext.hflip = function() {
-        return this.filter.hflip();
-    }
     assert.equal(
-        filterComplex(({ from, input, hflip }) => {
-            const [out] = from(input[0].v).pipe(hflip());
+        filterComplex(({ from, input, filter, command }) => {
+            const atempo = filter.atempo().ref('my');
+            const asendcmd = command(({ when }) => {
+                when(4.5).onEnter(atempo, 'tempo', 1.5);
+            }).toFilter('audio');
+            const [out] = from(input[0].a).pipe(asendcmd).pipe(atempo);
             return { out };
         }),
-        `[0:v]hflip[out]`
+        `[0:a]asendcmd='4.5 [enter] atempo@my tempo 1.5',atempo@my[out]`
+    );
+
+    (() => {
+        const context = filterComplex();
+        let chain = context.from(context.input[0].v);
+        chain = chain.pipe(context.filter.setpts('N/(60*TB)'));
+        const [out] = chain;
+        assert.equal(
+            context.complete({ out }),
+            `[0:v]setpts='N/(60*TB)'[out]`
+        );
+    })();
+
+    FilterComplexContext.select = function*(input, expr) {
+        const filter = this.filter.select();
+        const chain = this.from(input.mark('video')).pipe(filter);
+        let outputCount = 0;
+        for (const pipe of chain) {
+            outputCount++;
+            filter.setArguments({ n: outputCount, e: expr });
+            yield pipe;
+        }
+    }
+    assert.equal(
+        filterComplex(({ from, input, filter, select }) => {
+            const [odd, even] = select(input[0].v, 'mod(n,2)+1');
+            const [tmp] = from(odd).pipe(filter.pad({ h: '2*ih' }));
+            const [out] = from(tmp, even).pipe(filter.overlay({ y: 'h' }));
+            return { out };
+        }),
+        `[0:v]select='n=2:e=mod(n'\\,'2)+1'[_1][_2];[_1]pad='h=2*ih'[_3];[_3][_2]overlay='y=h'[out]`
     );
 
     console.log('Test passed!');

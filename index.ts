@@ -1,14 +1,29 @@
-export type FilterArgumentValue = string | number;
+export type FilterArgumentValue = number | string;
 export type FilterArgument = FilterArgumentValue | Record<string, FilterArgumentValue | FileArgument> | FilterArgumentValue[];
 export type FilterFunction = (...args: FilterArgument[]) => Filter;
 interface IterableStreamLikeArray<T> extends Iterable<T> {
   [index: number]: T;
+
+  /** @deprecated */
   toArray(count: number): T[];
+
+  /**
+   * Pick first `count` element(s) and return as an array.
+   */
+  pick(count: number): T[];
 }
 export type InputFileStreamMap = IterableStreamLikeArray<Pipe> & Record<string, Pipe>;
 export type FilterMap = Record<string, FilterFunction>;
 
+/**
+ * Context object for filtergraph generation.
+ */
 export interface FilterComplexContext {
+  /**
+   * Access to the context when using destructuring function parameter.
+   */
+  context: Readonly<FilterComplexContext>;
+
   /**
    * Build an empty filter chain.
    * 
@@ -34,14 +49,14 @@ export interface FilterComplexContext {
   pipe: (name?: string) => Pipe;
 
   /**
-   * Connect pipes to corresponding null filter if their outputs are not connected.
+   * Connect pipes to corresponding [nullsink](https://ffmpeg.org/ffmpeg-filters.html#nullsink) filter if their outputs are not connected.
    * 
    * @param labels Pipes to be connected. Can be `null` or `undefined`.
    */
   recycle: (...labels: (Pipe | null | undefined)[]) => void;
 
   /**
-   * Connect the specified pipe to corresponding split filter.
+   * Connect the specified pipe to corresponding [split](https://ffmpeg.org/ffmpeg-filters.html#split_002c-asplit) filter.
    * This allows data to flows into multiple filters.
    * 
    * @param pipe Pipe.
@@ -51,11 +66,21 @@ export interface FilterComplexContext {
 
   /**
    * Concatenate video and audio streams, joining them together one after another.
+   * 
+   * See [concat filter](https://ffmpeg.org/ffmpeg-filters.html#concat) for more details.
+   * 
    * @param videoStreams Segments in the video streams.
    * @param audioStreams Segments in the audio streams.
    * @returns A builder for further operations.
    */
   concat: (videoStreams?: Pipe[][], audioStreams?: Pipe[][]) => ConcatFilterBuilder;
+
+  /**
+   * Create a context for building [commands](https://ffmpeg.org/ffmpeg-filters.html#Commands-syntax).
+   * 
+   * If `f` is specified, `f` will be invoked within the context, and then the context will be returned.
+   */
+  command: (f?: (context: Readonly<CommandBuilderContext>) => void) => Readonly<CommandBuilderContext>;
 
   /**
    * Input streams.
@@ -97,18 +122,23 @@ export class Pipe {
   /** @internal */
   boundOutput = false;
   /** @internal */
-  shared = false;
+  shared: boolean;
 
-  /** @internal */
-  constructor(name: string, fixed?: boolean) {
+  /**
+   * Internal use only. Please use `FilterComplexContext.pipe()`.
+   */
+  constructor(name: string, fixed?: boolean, shared?: boolean) {
     this.name = name;
     this.fixed = fixed ?? false;
+    this.shared = shared ?? false;
   }
 
   /**
    * Give this pipe an unique name in order to refer to it elsewhere.
    * 
-   * This will throw an error if the pipe already has a name.
+   * It makes this pipe fixed and prevents renaming.
+   * 
+   * An error will be thrown if this pipe is fixed.
    * 
    * @param name Name of the pipe.
    */
@@ -127,6 +157,9 @@ export class Pipe {
    * @param mediaType Media type.
    */
   mark(mediaType: PipeMediaType) {
+    if (this.mediaType === mediaType) {
+      return this;
+    }
     if (this.mediaType !== 'unknown') {
       throw new Error(`Cannot mark this pipe as ${mediaType}, since it has been marked as ${this.mediaType}`);
     }
@@ -181,6 +214,9 @@ export class Pipe {
     return `[${this.name}]`;
   }
 
+  /**
+   * Similar to `toString()`, but only for debugging purpose.
+   */
   inspect() {
     if (this.hintText) {
       return `[${this.name}](${this.hintText})`;
@@ -191,12 +227,15 @@ export class Pipe {
 
 const SPREAD_OPERATOR_DETECT_THRESOLD = 128;
 const IterableStreamLikeArrayProto: IterableStreamLikeArray<unknown> = {
-  toArray(count) {
+  pick(count) {
     const arr = new Array(count);
     for (let i = 0; i < count; i++) {
       arr[i] = this[i];
     }
     return arr;
+  },
+  toArray(count) {
+    return this.pick(count);
   },
   *[Symbol.iterator]() {
     for (let i = 0; i < SPREAD_OPERATOR_DETECT_THRESOLD; i++) {
@@ -238,9 +277,8 @@ const InputProxy = createCachedGetterProxy<IterableStreamLikeArray<InputFileStre
     const streamProxy = createCachedGetterProxy<InputFileStreamMap>(
       Object.create(IterableStreamLikeArrayProto),
       (streamSpecifier) => {
-        const pipe = new Pipe(`${inputIndex}:${streamSpecifier}`, true);
+        const pipe = new Pipe(`${inputIndex}:${streamSpecifier}`, true, true);
         pipe.setBoundInput();
-        pipe.shared = true;
         if (typeof streamSpecifier === 'string') {
           const mediaType = MediaTypePrefixMap.find(
             ([prefix]) => streamSpecifier === prefix || streamSpecifier.startsWith(`${prefix}:`)
@@ -259,7 +297,9 @@ const InputProxy = createCachedGetterProxy<IterableStreamLikeArray<InputFileStre
 export class FileArgument {
   readonly path: string;
 
-  /** @internal */
+  /**
+   * Recommend using `FilterComplexContext.fileArgument()`.
+   */
   constructor(path: string) {
     this.path = path;
   }
@@ -268,10 +308,7 @@ export class FileArgument {
 const FileArgumentFactory = (path: string) => new FileArgument(path);
 
 export function escapeFilterArgumentValue(value: FilterArgumentValue): string {
-  if (typeof value === 'string') {
-    return value.replace(/[\\:']/g, '\\$&');
-  }
-  return String(value);
+  return String(value).replace(/[\\:']/g, '\\$&');
 }
 
 function parseFilterArguments(args: FilterArgument[]): string {
@@ -319,7 +356,9 @@ export class Filter {
   /** @internal */
   arguments?: string;
 
-  /** @internal */
+  /**
+   * Recommend using `FilterComplexContext.filter`.
+   */
   constructor(name: string, args: FilterArgument[]) {
     this.name = name;
     if (args.length > 0) {
@@ -361,12 +400,13 @@ export class Filter {
 }
 
 const FilterNameSymbol = Symbol('filterName');
+type FilterFunctionInternal = FilterFunction & { [FilterNameSymbol]: string }
 const FilterProxy = createCachedGetterProxy<Record<string, FilterFunction>>({}, (filterName) => {
   const filterFunc = (...args: FilterArgument[]) => {
     return new Filter(filterName as string, args);
   };
   filterFunc[FilterNameSymbol] = filterName;
-  return filterFunc;
+  return filterFunc as FilterFunctionInternal;
 });
 const NullFilterMap: Partial<Record<PipeMediaType, Filter>> = {
   video: FilterProxy.null(),
@@ -376,11 +416,15 @@ const NullSinkMap: Partial<Record<PipeMediaType, Filter>> = {
   video: FilterProxy.nullsink(),
   audio: FilterProxy.anullsink(),
 };
-const SplitMap: Partial<Record<PipeMediaType, FilterFunction>> = {
+const SplitFilterMap: Partial<Record<PipeMediaType, FilterFunction>> = {
   video: FilterProxy.split,
   audio: FilterProxy.asplit,
 };
 const ConcatFilter = FilterProxy.concat;
+const SendCommandFilterMap: Partial<Record<PipeMediaType, FilterFunction>> = {
+  video: FilterProxy.sendcmd,
+  audio: FilterProxy.asendcmd,
+};
 
 /**
  * Represents a node in the filter chain.
@@ -403,8 +447,13 @@ export class ChainNode implements Iterable<Pipe> {
   /** @internal */
   next?: ChainNode;
 
+  private constructor();
   /** @internal */
-  constructor(helper: FilterComplexHelper, source: Pipe[]) {
+  private constructor(helper: FilterComplexHelper, source: Pipe[])
+  private constructor(helper?: FilterComplexHelper, source?: Pipe[]) {
+    if (!helper || !source) {
+      throw new Error('Internal use only');
+    }
     this.helper = helper;
     this.source = source;
     this.filter = undefined;
@@ -413,6 +462,11 @@ export class ChainNode implements Iterable<Pipe> {
     this.prev = undefined;
     this.next = undefined;
     source.forEach((p) => this.helper.checkPipe(p));
+  }
+
+  /** @internal */
+  static create(helper: FilterComplexHelper, source: Pipe[]) {
+    return new this(helper, source);
   }
 
   /**
@@ -497,6 +551,7 @@ export class ChainNode implements Iterable<Pipe> {
 
   /**
    * Join this filter chain with another filter chain.
+   * 
    * @param node Last node of the other filter chain
    * @returns Last node of the joined filter chain
    */
@@ -507,8 +562,7 @@ export class ChainNode implements Iterable<Pipe> {
     if (!this.filter) {
       throw new Error(`Cannot connect empty chain to other chain`);
     }
-    this.helper.linkNode(this, node);
-    return node;
+    return this.helper.linkNode(this, node);
   }
 
   /**
@@ -560,17 +614,29 @@ export class ConcatFilterBuilder implements Iterable<Pipe> {
   audioStreams: Pipe[][];
   /** @internal */
   outputPipes?: Pipe[];
+  
+  private constructor();
   /** @internal */
-  constructor(helper: FilterComplexHelper) {
+  private constructor(helper: FilterComplexHelper);
+  private constructor(helper?: FilterComplexHelper) {
+    if (!helper) {
+      throw new Error('Internal use only');
+    }
     this.helper = helper;
     this.videoStreams = [];
     this.audioStreams = [];
+  }
+
+  /** @internal */
+  static create(helper: FilterComplexHelper) {
+    return new this(helper);
   }
 
   /**
    * Join synchronized video segments into a video stream.
    *
    * This method should not be used with `segment()`.
+   * 
    * @param pipes The synchronized video segments.
    */
   video(...pipes: Pipe[]) {
@@ -590,6 +656,7 @@ export class ConcatFilterBuilder implements Iterable<Pipe> {
    * Join synchronized audio segments into an audio stream.
    *
    * This method should not be used with `segment()`.
+   * 
    * @param pipes The synchronized audio segments.
    */
   audio(...pipes: Pipe[]) {
@@ -609,6 +676,7 @@ export class ConcatFilterBuilder implements Iterable<Pipe> {
    * Add a segment with synchronized video and audio streams.
    *
    * This method should not be used with `video()` and `audio()`.
+   * 
    * @param videoPipes The synchronized video streams.
    * @param audioPipes The synchronized audio streams.
    */
@@ -643,6 +711,7 @@ export class ConcatFilterBuilder implements Iterable<Pipe> {
 
   /**
    * Build a `concat` chain and return the concatenated output pipes.
+   * 
    * @returns An array of `Pipe`, representing `[...videoStreams, ...audioStreams]`.
    */
   build() {
@@ -685,6 +754,150 @@ export class ConcatFilterBuilder implements Iterable<Pipe> {
 
   [Symbol.iterator]() {
     return this.build()[Symbol.iterator]();
+  }
+}
+
+/**
+ * Context object for command generation.
+ */
+export interface CommandBuilderContext {
+  /**
+   * Access to the context when using destructuring function parameter.
+   */
+  context: Readonly<CommandBuilderContext>;
+
+  /**
+   * Create a interval and return its builder.
+   * 
+   * @param start The start time of the interval.
+   * @param end The end time of the interval.
+   * @returns The interval builder.
+   */
+  when: (start: string | number, end?: string | number) => CommandIntervalBuilder;
+
+  /**
+   * Create the corresponding [sendcmd](https://ffmpeg.org/ffmpeg-filters.html#sendcmd_002c-asendcmd) filter.
+   * 
+   * @param mediaType Media type of the sibling pads.
+   */
+  toFilter(mediaType: PipeMediaType): Filter;
+
+  /**
+   * Return the string representation of this commands description.
+   */
+  toString(): string;
+}
+
+class CommandBuilderHelper {
+  intervals: CommandIntervalBuilder[] = [];
+
+  createInterval(start: string | number, end?: string | number) {
+    const interval = new CommandIntervalBuilder(start, end);
+    this.intervals.push(interval);
+    return interval;
+  }
+
+  getContext() {
+    const ctx = {
+      when: (start, end) => this.createInterval(start, end),
+      toFilter: (mediaType) => this.toFilter(mediaType),
+      toString: () => this.toString()
+    } as Partial<CommandBuilderContext>;
+    return ctx.context = ctx as Readonly<CommandBuilderContext>;
+  }
+
+  toFilter(mediaType: PipeMediaType) {
+    const sendCommandFilterFunc: FilterFunction | undefined = SendCommandFilterMap[mediaType];
+    if (sendCommandFilterFunc === undefined) {
+      throw new Error(`Cannot create filter for media type ${mediaType}.`);
+    }
+    const filter = sendCommandFilterFunc(this.toString());
+    return filter;
+  }
+
+  toString() {
+    const intervals = this.intervals.map((interval) => interval.toString());
+    return intervals.join(';');
+  }
+}
+
+/**
+ * Builder for command intervals.
+ */
+export class CommandIntervalBuilder {
+  /** @internal */
+  start: string | number;
+  /** @internal */
+  end?: string | number;
+  /** @internal */
+  commands: Array<{
+    flags: string;
+    target: string;
+    command: string;
+    arg: string;
+  }>;
+
+  /**
+   * Recommend using `CommandBuilderContext.when()`.
+   */
+  constructor(start: string | number, end?: string | number) {
+    this.start = start;
+    this.end = end;
+    this.commands = [];
+  }
+
+  /**
+   * Add a command into the interval.
+   * 
+   * See [commands syntax](https://ffmpeg.org/ffmpeg-filters.html#Commands-syntax) for details about arguments.
+   */
+  on(flags: string | string[], target: string | FilterFunction | Filter, command: string, ...args: FilterArgument[]) {
+    const flagStr = Array.isArray(flags) ? flags.join('+') : flags;
+    const targetStr = typeof target === 'string'
+      ? target
+      : target instanceof Filter
+        ? target.toString()
+        : (target as FilterFunctionInternal)[FilterNameSymbol];
+    const argStr = parseFilterArguments(args);
+    this.commands.push({ flags: flagStr, target: targetStr, command, arg: argStr });
+    return this;
+  }
+
+  /**
+   * Shorthand for `on('enter', ...)`.
+   * 
+   * See [commands syntax](https://ffmpeg.org/ffmpeg-filters.html#Commands-syntax) for details about arguments.
+   */
+  onEnter(target: string | FilterFunction | Filter, command: string, ...args: FilterArgument[]) {
+    return this.on('enter', target, command, ...args);
+  }
+
+  /**
+   * Shorthand for `on('leave', ...)`.
+   * 
+   * See [commands syntax](https://ffmpeg.org/ffmpeg-filters.html#Commands-syntax) for details about arguments.
+   */
+  onLeave(target: string | FilterFunction | Filter, command: string, ...args: FilterArgument[]) {
+    return this.on('leave', target, command, ...args);
+  }
+
+  /**
+   * Shorthand for `on('enter+leave', ...)`.
+   * 
+   * See [commands syntax](https://ffmpeg.org/ffmpeg-filters.html#Commands-syntax) for details about arguments.
+   */
+  onEnterOrLeave(target: string | FilterFunction | Filter, command: string, ...args: FilterArgument[]) {
+    return this.on(['enter', 'leave'], target, command, ...args);
+  }
+
+  /** @internal */
+  toString() {
+    const range = this.end !== undefined ? `${this.start}-${this.end}` : `${this.start}`;
+    const commands = this.commands.map(({ flags, target, command, arg }) => `[${flags}] ${target} ${command} ${arg}`);
+    if (commands.length > 0) {
+      return `${range} ${commands.join(',')}`;
+    }
+    return '';
   }
 }
 
@@ -733,7 +946,7 @@ class FilterComplexHelper {
   }
 
   createChain(source: Pipe[]) {
-    const chain = new ChainNode(this, source);
+    const chain = ChainNode.create(this, source);
     this.addChain(chain);
     return chain;
   }
@@ -756,10 +969,11 @@ class FilterComplexHelper {
     if (toChainIndex > 0) {
       this.chains.splice(toChainIndex, 1);
     }
+    return toChain[toChain.length - 1];
   }
 
   concatPipe(videoStreams?: Pipe[][], audioStreams?: Pipe[][]) {
-    const builder = new ConcatFilterBuilder(this);
+    const builder = ConcatFilterBuilder.create(this);
     if (videoStreams) {
       for (const videoStream of videoStreams) {
         builder.video(...videoStream);
@@ -774,7 +988,7 @@ class FilterComplexHelper {
   }
 
   *splitPipe(pipe: Pipe) {
-    const splitFilterFunc: FilterFunction | undefined = SplitMap[pipe.mediaType];
+    const splitFilterFunc: FilterFunction | undefined = SplitFilterMap[pipe.mediaType];
     if (splitFilterFunc === undefined) {
       if (pipe.mediaType === 'unknown') {
         throw new Error(`Cannot split ${pipe.inspect()}: Please use pipe.mark() to specify the pipe media type.`);
@@ -792,6 +1006,15 @@ class FilterComplexHelper {
     }
   }
 
+  buildCommands(f?: (context: Readonly<CommandBuilderContext>) => void) {
+    const helper = new CommandBuilderHelper();
+    const context = helper.getContext();
+    if (f) {
+      f(context);
+    }
+    return context;
+  }
+
   getContext() {
     const ctx = {
       from: (...source) => this.createChain(source),
@@ -800,6 +1023,7 @@ class FilterComplexHelper {
       recycle: (...pipes) => this.sinkPipes(pipes),
       split: (pipe) => this.splitPipe(pipe),
       concat: (videoStreams, audioStreams) => this.concatPipe(videoStreams, audioStreams),
+      command: (f) => this.buildCommands(f),
       input: InputProxy,
       filter: FilterProxy,
       fileArgument: FileArgumentFactory,
@@ -811,7 +1035,7 @@ class FilterComplexHelper {
       }
       (ctx as any)[k] = value;
     });
-    return ctx as Readonly<FilterComplexContext>;
+    return ctx.context = ctx as Readonly<FilterComplexContext>;
   }
 
   renamePipes(map: Record<string, Pipe>) {
@@ -894,6 +1118,9 @@ class FilterComplexHelper {
   }
 
   complete(exports?: Record<string, Pipe>) {
+    if (this.completed) {
+      throw new Error(`Completed filtergraph`);
+    }
     if (exports) {
       this.renamePipes(exports).forEach((p) => p.setBoundOutput());
     }
@@ -904,20 +1131,27 @@ class FilterComplexHelper {
 }
 
 /**
- * Invoke the specified function `f` within a special context and return the generated filtergraph.
+ * Invoke the specified function `f` within a special context and return the generated [filtergraph](https://ffmpeg.org/ffmpeg-filters.html#Filtergraph-syntax-1).
  * 
  * Pipes returned by `f` will be named and exported.
+ * 
+ * If `f` is not provided, the special context returns instead. 
  */
-export function filterComplex(f: (c: FilterComplexContext) => void | Record<string, Pipe>): string;
-export function filterComplex(f: (c: FilterComplexContext) => Promise<void | Record<string, Pipe>>): Promise<string>;
+export function filterComplex(f: (c: Readonly<FilterComplexContext>) => void | Record<string, Pipe>): string;
+export function filterComplex(f: (c: Readonly<FilterComplexContext>) => Promise<void | Record<string, Pipe>>): Promise<string>;
+export function filterComplex(): Readonly<FilterComplexContext> & { complete: (exports?: Record<string, Pipe>) => string };
 export function filterComplex(
-  f: (c: FilterComplexContext) => void | Record<string, Pipe> | Promise<void | Record<string, Pipe>>
+  f?: (c: Readonly<FilterComplexContext>) => void | Record<string, Pipe> | Promise<void | Record<string, Pipe>>
 ) {
   const helper = new FilterComplexHelper();
-  const c = helper.getContext();
-  const result = f(c);
-  if (result?.then && !(result.then instanceof Pipe)) {
-    return result.then((r) => helper.complete(r as undefined | Record<string, Pipe>));
+  const context = helper.getContext();
+  const complete = (exports?: Record<string, Pipe>) => helper.complete(exports);
+  if (f) {
+    const result = f(context);
+    if (typeof result?.then === 'function') {
+      return result.then(complete as (exports: void | Record<string, Pipe>) => string);
+    }
+    return complete(result as undefined | Record<string, Pipe>);
   }
-  return helper.complete(result as undefined | Record<string, Pipe>);
+  return Object.assign(context, { complete });
 }
