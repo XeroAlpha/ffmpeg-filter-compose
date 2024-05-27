@@ -81,3 +81,6 @@ typings/
 
 # dist
 dist/
+
+# typedoc
+docs/

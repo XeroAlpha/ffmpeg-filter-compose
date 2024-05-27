@@ -2,6 +2,8 @@
 
 [Filtergraph](https://ffmpeg.org/ffmpeg-filters.html#Filtergraph-description) generator with composing API for [FFmpeg](https://ffmpeg.org/).
 
+API References: https://xeroalpha.github.io/ffmpeg-filter-compose/
+
 ## Install
 
 NPM: [ffmpeg-filter-compose](https://www.npmjs.com/package/ffmpeg-filter-compose)
@@ -76,6 +78,17 @@ filterComplex(({ from, use, pipe, filter }) => {
     return { out };
 })
 // => `testsrc,split[L1],hflip[L2];[L1][L2]hstack[out]`
+```
+
+Automatic split insertion:
+```js
+filterComplex(({ from, use, filter }) => {
+    const [testVideo] = use(filter.testsrc);
+    const [flipped] = from(testVideo.mark('video')).pipe(filter.hflip);
+    const [out] = from(testVideo, flipped).pipe(filter.hstack); // Notice testVideo is used twice!
+    return { out };
+})
+// => `testsrc[_1];[_3]hflip[_2];[_4][_2]hstack[out];[_1]split[_3][_4]`
 ```
 
 Send commands:

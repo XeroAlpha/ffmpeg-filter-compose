@@ -1,7 +1,7 @@
 export type FilterArgumentValue = number | string;
 export type FilterArgument = FilterArgumentValue | Record<string, FilterArgumentValue | FileArgument> | FilterArgumentValue[];
 export type FilterFunction = (...args: FilterArgument[]) => Filter;
-interface IterableStreamLikeArray<T> extends Iterable<T> {
+export interface IterableStreamLikeArray<T> extends Iterable<T> {
   [index: number]: T;
 
   /** @deprecated */
@@ -36,9 +36,10 @@ export interface FilterComplexContext {
    * Build a filter chain that sourced from the specified filter.
    * 
    * @param filterOrFunc Filter or its factory.
+   * @param labels Pipes that will connect to input pads of chain.
    * @returns The start node of the filter chain.
    */
-  use: (filterOrFunc: Filter | FilterFunction) => ChainNode;
+  use: (filterOrFunc: Filter | FilterFunction, ...labels: Pipe[]) => ChainNode;
 
   /**
    * Create a pipe.
@@ -224,6 +225,8 @@ export class Pipe {
     return `[${this.name}]`;
   }
 }
+
+export type PipeReference = [Pipe];
 
 const SPREAD_OPERATOR_DETECT_THRESOLD = 128;
 const IterableStreamLikeArrayProto: IterableStreamLikeArray<unknown> = {
@@ -435,7 +438,7 @@ export class ChainNode implements Iterable<Pipe> {
   /** @internal */
   helper: FilterComplexHelper;
   /** @internal */
-  source: Pipe[];
+  source: PipeReference[];
   /** @internal */
   filter?: Filter;
   /** @internal */
@@ -449,8 +452,8 @@ export class ChainNode implements Iterable<Pipe> {
 
   private constructor();
   /** @internal */
-  private constructor(helper: FilterComplexHelper, source: Pipe[])
-  private constructor(helper?: FilterComplexHelper, source?: Pipe[]) {
+  private constructor(helper: FilterComplexHelper, source: PipeReference[])
+  private constructor(helper?: FilterComplexHelper, source?: PipeReference[]) {
     if (!helper || !source) {
       throw new Error('Internal use only');
     }
@@ -461,11 +464,10 @@ export class ChainNode implements Iterable<Pipe> {
     this.destination = [];
     this.prev = undefined;
     this.next = undefined;
-    source.forEach((p) => this.helper.checkPipe(p));
   }
 
   /** @internal */
-  static create(helper: FilterComplexHelper, source: Pipe[]) {
+  static create(helper: FilterComplexHelper, source: PipeReference[]) {
     return new this(helper, source);
   }
 
@@ -487,7 +489,7 @@ export class ChainNode implements Iterable<Pipe> {
     if (!this.filter) {
       this.filter = filter;
       this.swsFlags = swsFlags;
-      this.source.forEach((p) => p.setBoundOutput());
+      this.source.forEach((p) => this.helper.setBoundOutputForPipeReference(p));
       return this;
     }
     const next = new ChainNode(this.helper, []);
@@ -515,16 +517,11 @@ export class ChainNode implements Iterable<Pipe> {
       const fork = new ChainNode(this.helper, src.slice(0, connectedPipeCount));
       return fork;
     }
-    const dest = this.destination;
-    if (dest.length < connectedPipeCount) {
-      for (let i = dest.length; i <= connectedPipeCount; i++) {
-        const pipe = this.helper.createPipe();
-        pipe.setBoundInput();
-        pipe.hint(`${this.filter}.output.${i}`);
-        dest.push(pipe);
-      }
+    const forkSources: Pipe[] = [];
+    for (let i = 0; i < connectedPipeCount; i++) {
+      forkSources[i] = this.getOutputPipe(i);
     }
-    const fork = new ChainNode(this.helper, dest.slice(0, connectedPipeCount));
+    const fork = this.helper.createChain(forkSources);
     return fork;
   }
 
@@ -570,23 +567,27 @@ export class ChainNode implements Iterable<Pipe> {
    */
   *[Symbol.iterator](): Iterator<Pipe> {
     if (!this.filter) {
-      for (const pipe of this.source) {
+      for (const [pipe] of this.source) {
         yield pipe;
       }
       return;
     }
-    const dest = this.destination;
-    for (const pipe of dest) {
-      yield pipe;
-    }
-    while (dest.length < SPREAD_OPERATOR_DETECT_THRESOLD) {
-      const pipe = this.helper.createPipe();
-      pipe.setBoundInput();
-      pipe.hint(`${this.filter}.output.${dest.length}`);
-      dest.push(pipe);
-      yield pipe;
+    for (let i = 0; i < SPREAD_OPERATOR_DETECT_THRESOLD; i++) {
+      yield this.getOutputPipe(i);
     }
     throw new Error(`Do not use spread operator on chain.`);
+  }
+
+  /** @internal */
+  getOutputPipe(index: number) {
+    if (index < this.destination.length) {
+      return this.destination[index];
+    }
+    const pipe = this.helper.createPipe();
+    pipe.setBoundInput();
+    pipe.hint(`${this.filter}.output.${index}`);
+    this.destination[index] = pipe;
+    return pipe;
   }
 
   /** @internal */
@@ -916,9 +917,15 @@ export function traverseChainNodes(chain: ChainNode) {
   return nodes;
 }
 
+interface TrackingPipeReferenceGroup {
+  references: Set<PipeReference>;
+  splitter?: () => Pipe;
+}
+
 class FilterComplexHelper {
   anonymousPipeCounter = 0;
   trackingPipes = new Set<Pipe>();
+  trackingPipeReferences = new Map<Pipe, TrackingPipeReferenceGroup>();
   chains: ChainNode[] = [];
   completed = false;
 
@@ -945,8 +952,25 @@ class FilterComplexHelper {
     }
   }
 
+  asPipeReference(pipe: Pipe) {
+    const newReference = [pipe] as PipeReference;
+    if (!pipe.shared) {
+      let referenceGroup = this.trackingPipeReferences.get(pipe);
+      if (!referenceGroup) {
+        referenceGroup = { references: new Set() };
+        this.trackingPipeReferences.set(pipe, referenceGroup);
+      }
+      referenceGroup.references.add(newReference);
+    }
+    return newReference;
+  }
+
+  asPipeReferences(pipes: Pipe[]) {
+    return pipes.map((pipe) => this.asPipeReference(pipe));
+  }
+
   createChain(source: Pipe[]) {
-    const chain = ChainNode.create(this, source);
+    const chain = ChainNode.create(this, this.asPipeReferences(source));
     this.addChain(chain);
     return chain;
   }
@@ -987,7 +1011,7 @@ class FilterComplexHelper {
     return builder;
   }
 
-  *splitPipe(pipe: Pipe) {
+  createSplitFilter(pipe: Pipe) {
     const splitFilterFunc: FilterFunction | undefined = SplitFilterMap[pipe.mediaType];
     if (splitFilterFunc === undefined) {
       if (pipe.mediaType === 'unknown') {
@@ -996,7 +1020,11 @@ class FilterComplexHelper {
         throw new Error(`Cannot split ${pipe.inspect()}: Cannot find appropriate split filter.`);
       }
     }
-    const filter = splitFilterFunc();
+    return splitFilterFunc();
+  }
+
+  *splitPipe(pipe: Pipe) {
+    const filter = this.createSplitFilter(pipe);
     const chain = this.createChain([pipe]).pipe(filter);
     let outputCount = 0;
     for (const output of chain) {
@@ -1004,6 +1032,46 @@ class FilterComplexHelper {
       filter.arguments = `${outputCount}`;
       yield output;
     }
+  }
+
+  createUnderlyingPipeSplitter(pipeReference: PipeReference) {
+    const [pipe] = pipeReference;
+    const filter = this.createSplitFilter(pipe);
+    const chain = this.createChain([]);
+    chain.source.push([pipe]);
+    chain.filter = filter;
+    const generator = chain[Symbol.iterator]();
+    const splitter = () => generator.next().value! as Pipe;
+    const replacementPipe = splitter();
+    pipeReference[0] = replacementPipe;
+    replacementPipe.setBoundOutput();
+    return splitter;
+  }
+
+  setBoundOutputForPipeReference(pipeReference: PipeReference, keepName?: boolean) {
+    const [pipe] = pipeReference;
+    if (pipe.shared) return;
+    const referenceGroup = this.trackingPipeReferences.get(pipe);
+    if (!referenceGroup) {
+      throw new Error(`Pipe reference is not tracking: ${pipe.inspect()}`);
+    }
+    const { references } = referenceGroup;
+    if (!references.has(pipeReference)) {
+      throw new Error(`Pipe reference is not tracking: ${pipe.inspect()}`);
+    }
+    if (pipe.boundOutput) {
+      let { splitter } = referenceGroup;
+      if (!splitter) {
+        const [inputPipeReference] = references;
+        splitter = this.createUnderlyingPipeSplitter(inputPipeReference);
+      }
+      const newSplitedPipe = splitter();
+      pipeReference[0] = newSplitedPipe;
+      if (keepName) {
+        [pipe.name, newSplitedPipe.name] = [newSplitedPipe.name, pipe.name];
+      }
+    }
+    pipeReference[0].setBoundOutput();
   }
 
   buildCommands(f?: (context: Readonly<CommandBuilderContext>) => void) {
@@ -1018,7 +1086,7 @@ class FilterComplexHelper {
   getContext() {
     const ctx = {
       from: (...source) => this.createChain(source),
-      use: (filterOrFunc) => this.createChain([]).pipe(filterOrFunc),
+      use: (filterOrFunc, ...source) => this.createChain(source).pipe(filterOrFunc),
       pipe: (name) => this.createPipe(name),
       recycle: (...pipes) => this.sinkPipes(pipes),
       split: (pipe) => this.splitPipe(pipe),
@@ -1122,7 +1190,10 @@ class FilterComplexHelper {
       throw new Error(`Completed filtergraph`);
     }
     if (exports) {
-      this.renamePipes(exports).forEach((p) => p.setBoundOutput());
+      this.renamePipes(exports).forEach((pipe) => {
+        const pipeReference = this.asPipeReference(pipe);
+        this.setBoundOutputForPipeReference(pipeReference, true);
+      });
     }
     this.checkTrackingPipes();
     this.completed = true;
