@@ -22,7 +22,7 @@ filterComplex(({ from, input, filter }) => {
         .pipe(filter.scale({ w: 200, h: 100 }));
     return { videoOutput };
 })
-// => `[0:v]crop='400:200:12:34',scale='w=200:h=100'[videoOutput]`
+// => `[0:v]crop=400:200:12:34,scale=w=200:h=100[videoOutput]`
 ```
 
 Multiple inputs and outputs:
@@ -36,7 +36,7 @@ filterComplex(({ from, input, filter, split }) => {
     const [out] = from(main, flip).pipe(filter.overlay([0, 'H/2']));
     return { out };
 })
-// => `[0:v]split='2'[_1][_2];[_2]crop='iw:ih/2:0:0',vflip[_3];[_1][_3]overlay='0:H/2'[out]`
+// => `[0:v]split[_1][_2];[_2]crop=iw:ih/2:0:0,vflip[_3];[_1][_3]overlay=0:H/2[out]`
 ```
 
 Apply filter conditionally:
@@ -63,7 +63,7 @@ filterComplex(({ from, input, filter, concat }) => {
         .audio(...inputArr.map((e) => e.a));
     return { outv, outa };
 })
-// => `[0:v]fade='t=in:d=1'[_1];[1:v]fade='t=in:d=1'[_2];[_1][0:a][_2][1:a]concat='n=2:v=1:a=1'[outv][outa]`
+// => `[0:v]fade=t=in:d=1[_1];[1:v]fade=t=in:d=1[_2];[_1][0:a][_2][1:a]concat=n=2:v=1:a=1[outv][outa]`
 ```
 
 Complex example:
@@ -83,9 +83,9 @@ filterComplex(({ from, use, pipe, filter }) => {
 Automatic split insertion:
 ```js
 filterComplex(({ from, use, filter }) => {
-    const [testVideo] = use(filter.testsrc);
-    const [flipped] = from(testVideo.mark('video')).pipe(filter.hflip);
-    const [out] = from(testVideo, flipped).pipe(filter.hstack); // Notice testVideo is used twice!
+    const [testVideo] = use(filter.testsrc).mark('video');
+    const [flipped] = from(testVideo).pipe(filter.hflip);
+    const [out] = from(testVideo, flipped).pipe(filter.hstack); // testVideo is used twice!
     return { out };
 })
 // => `testsrc[_1];[_3]hflip[_2];[_4][_2]hstack[out];[_1]split[_3][_4]`
@@ -112,7 +112,7 @@ chain = chain.pipe(context.filter.setpts('N/(60*TB)'));
 // ......
 const [out] = chain;
 context.complete({ out });
-// => `[0:v]setpts='N/(60*TB)'[out]`
+// => `[0:v]setpts=N/(60*TB)[out]`
 ```
 
 Extension:
@@ -140,7 +140,7 @@ filterComplex(({ from, input, filter, select }) => {
     const [out] = from(tmp, even).pipe(filter.overlay({ y: 'h' }));
     return { out };
 })
-// => `[0:v]select='n=2:e=mod(n'\\,'2)+1'[_1][_2];[_1]pad='h=2*ih'[_3];[_3][_2]overlay='y=h'[out]`
+// => `[0:v]select='n=2:e=mod(n'\\,'2)+1'[_1][_2];[_1]pad=h=2*ih[_3];[_3][_2]overlay=y=h[out]`
 ```
 
 ## FAQ

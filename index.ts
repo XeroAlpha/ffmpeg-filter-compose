@@ -396,7 +396,8 @@ export class Filter {
   toString(withArguments?: boolean) {
     const name = `${this.name}${this.id ? `@${this.id}` : ''}`;
     if (withArguments && this.arguments !== undefined) {
-      return `${name}=${escapeFilterArgument(this.arguments, true)}`;
+      const escapedArguments = escapeFilterArgument(this.arguments);
+      return `${name}=${escapedArguments === this.arguments ? escapedArguments : escapeFilterArgument(this.arguments, true)}`;
     }
     return name;
   }
@@ -449,6 +450,8 @@ export class ChainNode implements Iterable<Pipe> {
   prev?: ChainNode;
   /** @internal */
   next?: ChainNode;
+  /** @internal */
+  mediaTypes: PipeMediaType[];
 
   private constructor();
   /** @internal */
@@ -464,6 +467,7 @@ export class ChainNode implements Iterable<Pipe> {
     this.destination = [];
     this.prev = undefined;
     this.next = undefined;
+    this.mediaTypes = [];
   }
 
   /** @internal */
@@ -489,7 +493,7 @@ export class ChainNode implements Iterable<Pipe> {
     if (!this.filter) {
       this.filter = filter;
       this.swsFlags = swsFlags;
-      this.source.forEach((p) => this.helper.setBoundOutputForPipeReference(p));
+      this.source.forEach((p) => this.helper.dereferencePipeForBound(p).setBoundOutput());
       return this;
     }
     const next = new ChainNode(this.helper, []);
@@ -541,6 +545,9 @@ export class ChainNode implements Iterable<Pipe> {
     for (const pipe of pipes) {
       this.helper.checkPipe(pipe);
       pipe.setBoundInput();
+      if (this.mediaTypes[dest.length]) {
+        pipe.mark(this.mediaTypes[dest.length]);
+      }
       dest.push(pipe);
     }
     return this;
@@ -560,6 +567,22 @@ export class ChainNode implements Iterable<Pipe> {
       throw new Error(`Cannot connect empty chain to other chain`);
     }
     return this.helper.linkNode(this, node);
+  }
+
+  /**
+   * Mark the output pipes with the specified media types.
+   * 
+   * @param mediaTypes Media types.
+   */
+  mark(...mediaTypes: PipeMediaType[]) {
+    for (let i = 0; i < mediaTypes.length; i++) {
+      if (this.destination[i]) {
+        this.destination[i].mark(mediaTypes[i]);
+      } else {
+        this.mediaTypes[i] = mediaTypes[i];
+      }
+    }
+    return this;
   }
 
   /**
@@ -586,6 +609,9 @@ export class ChainNode implements Iterable<Pipe> {
     const pipe = this.helper.createPipe();
     pipe.setBoundInput();
     pipe.hint(`${this.filter}.output.${index}`);
+    if (this.mediaTypes[index]) {
+      pipe.mark(this.mediaTypes[index]);
+    }
     this.destination[index] = pipe;
     return pipe;
   }
@@ -1029,7 +1055,7 @@ class FilterComplexHelper {
     let outputCount = 0;
     for (const output of chain) {
       outputCount += 1;
-      filter.arguments = `${outputCount}`;
+      filter.arguments = outputCount === 2 ? undefined : `${outputCount}`;
       yield output;
     }
   }
@@ -1040,17 +1066,22 @@ class FilterComplexHelper {
     const chain = this.createChain([]);
     chain.source.push([pipe]);
     chain.filter = filter;
-    const generator = chain[Symbol.iterator]();
-    const splitter = () => generator.next().value! as Pipe;
+    let outputCount = 0;
+    const splitter = () => {
+      const pipe = chain.getOutputPipe(outputCount);
+      outputCount += 1;
+      filter.arguments = outputCount === 2 ? undefined : `${outputCount}`;
+      return pipe;
+    };
     const replacementPipe = splitter();
     pipeReference[0] = replacementPipe;
     replacementPipe.setBoundOutput();
     return splitter;
   }
 
-  setBoundOutputForPipeReference(pipeReference: PipeReference, keepName?: boolean) {
+  dereferencePipeForBound(pipeReference: PipeReference) {
     const [pipe] = pipeReference;
-    if (pipe.shared) return;
+    if (pipe.shared) return pipe;
     const referenceGroup = this.trackingPipeReferences.get(pipe);
     if (!referenceGroup) {
       throw new Error(`Pipe reference is not tracking: ${pipe.inspect()}`);
@@ -1059,19 +1090,15 @@ class FilterComplexHelper {
     if (!references.has(pipeReference)) {
       throw new Error(`Pipe reference is not tracking: ${pipe.inspect()}`);
     }
-    if (pipe.boundOutput) {
-      let { splitter } = referenceGroup;
-      if (!splitter) {
-        const [inputPipeReference] = references;
-        splitter = this.createUnderlyingPipeSplitter(inputPipeReference);
-      }
-      const newSplitedPipe = splitter();
-      pipeReference[0] = newSplitedPipe;
-      if (keepName) {
-        [pipe.name, newSplitedPipe.name] = [newSplitedPipe.name, pipe.name];
-      }
+    if (!pipe.boundOutput) return pipe;
+    let { splitter } = referenceGroup;
+    if (!splitter) {
+      const [inputPipeReference] = references;
+      splitter = this.createUnderlyingPipeSplitter(inputPipeReference);
     }
-    pipeReference[0].setBoundOutput();
+    const newSplitedPipe = splitter();
+    pipeReference[0] = newSplitedPipe;
+    return newSplitedPipe;
   }
 
   buildCommands(f?: (context: Readonly<CommandBuilderContext>) => void) {
@@ -1106,29 +1133,25 @@ class FilterComplexHelper {
     return ctx.context = ctx as Readonly<FilterComplexContext>;
   }
 
-  renamePipes(map: Record<string, Pipe>) {
-    const pipes: Pipe[] = [];
-    for (const [newName, pipe] of Object.entries(map)) {
-      if (pipe.name === newName) {
-        pipes.push(pipe);
-      } else if (pipe.fixed) {
-        const nullFilter: Filter | undefined = NullFilterMap[pipe.mediaType];
-        if (nullFilter === undefined) {
-          if (pipe.mediaType === 'unknown') {
-            throw new Error(
-              `Cannot rename ${pipe.inspect()} to [${newName}]: Please use pipe.mark() to specify the pipe media type.`
-            );
-          } else {
-            throw new Error(`Cannot rename ${pipe.inspect()} to [${newName}]: Cannot find appropriate pass filter.`);
-          }
-        }
-        const [redirectedPipe] = this.createChain([pipe]).pipe(nullFilter);
-        pipes.push(redirectedPipe.as(newName));
-      } else {
-        pipes.push(pipe.as(newName));
-      }
+  renamePipe(pipe: Pipe, newName: string) {
+    if (pipe.name === newName) {
+      return pipe;
     }
-    return pipes;
+    if (pipe.fixed) {
+      const nullFilter: Filter | undefined = NullFilterMap[pipe.mediaType];
+      if (nullFilter === undefined) {
+        if (pipe.mediaType === 'unknown') {
+          throw new Error(
+            `Cannot rename ${pipe.inspect()} to [${newName}]: Please use pipe.mark() to specify the pipe media type.`
+          );
+        } else {
+          throw new Error(`Cannot rename ${pipe.inspect()} to [${newName}]: Cannot find appropriate pass filter.`);
+        }
+      }
+      const [redirectedPipe] = this.createChain([pipe]).pipe(nullFilter);
+      return redirectedPipe.as(newName);
+    }
+    return pipe.as(newName);
   }
 
   sinkPipes(pipes: (Pipe | null | undefined)[]) {
@@ -1190,10 +1213,12 @@ class FilterComplexHelper {
       throw new Error(`Completed filtergraph`);
     }
     if (exports) {
-      this.renamePipes(exports).forEach((pipe) => {
+      for (const [newName, pipe] of Object.entries(exports)) {
         const pipeReference = this.asPipeReference(pipe);
-        this.setBoundOutputForPipeReference(pipeReference, true);
-      });
+        const dereferencedPipe = this.dereferencePipeForBound(pipeReference);
+        const renamedPipe = this.renamePipe(dereferencedPipe, newName);
+        renamedPipe.setBoundOutput();
+      }
     }
     this.checkTrackingPipes();
     this.completed = true;

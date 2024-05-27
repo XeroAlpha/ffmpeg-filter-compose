@@ -15,7 +15,7 @@ declare module './index' {
                 .pipe(filter.scale({ w: 200, h: 100 }));
             return { videoOutput };
         }),
-        `[0:v]crop='400:200:12:34',scale='w=200:h=100'[videoOutput]`
+        `[0:v]crop=400:200:12:34,scale=w=200:h=100[videoOutput]`
     );
     
     assert.equal(
@@ -28,7 +28,7 @@ declare module './index' {
             const [out] = from(main, flip).pipe(filter.overlay([0, 'H/2']));
             return { out };
         }),
-        `[0:v]split='2'[_1][_2];[_2]crop='iw:ih/2:0:0',vflip[_3];[_1][_3]overlay='0:H/2'[out]`
+        `[0:v]split[_1][_2];[_2]crop=iw:ih/2:0:0,vflip[_3];[_1][_3]overlay=0:H/2[out]`
     );
 
     let fetchNegate = async () => false;
@@ -61,7 +61,7 @@ declare module './index' {
                 .audio(...inputArr.map((e) => e.a));
             return { outv, outa };
         }),
-        `[0:v]fade='t=in:d=1'[_1];[1:v]fade='t=in:d=1'[_2];[_1][0:a][_2][1:a]concat='n=2:v=1:a=1'[outv][outa]`
+        `[0:v]fade=t=in:d=1[_1];[1:v]fade=t=in:d=1[_2];[_1][0:a][_2][1:a]concat=n=2:v=1:a=1[outv][outa]`
     );
 
     assert.equal(
@@ -79,8 +79,8 @@ declare module './index' {
 
     assert.equal(
         filterComplex(({ from, use, filter }) => {
-            const [testVideo] = use(filter.testsrc);
-            const [flipped] = from(testVideo.mark('video')).pipe(filter.hflip);
+            const [testVideo] = use(filter.testsrc).mark('video');
+            const [flipped] = from(testVideo).pipe(filter.hflip);
             const [out] = from(testVideo, flipped).pipe(filter.hstack);
             return { out };
         }),
@@ -106,7 +106,7 @@ declare module './index' {
         const [out] = chain;
         assert.equal(
             context.complete({ out }),
-            `[0:v]setpts='N/(60*TB)'[out]`
+            `[0:v]setpts=N/(60*TB)[out]`
         );
     })();
 
@@ -127,7 +127,7 @@ declare module './index' {
             const [out] = from(tmp, even).pipe(filter.overlay({ y: 'h' }));
             return { out };
         }),
-        `[0:v]select='n=2:e=mod(n'\\,'2)+1'[_1][_2];[_1]pad='h=2*ih'[_3];[_3][_2]overlay='y=h'[out]`
+        `[0:v]select='n=2:e=mod(n'\\,'2)+1'[_1][_2];[_1]pad=h=2*ih[_3];[_3][_2]overlay=y=h[out]`
     );
 
     console.log('Test passed!');
