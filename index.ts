@@ -212,6 +212,9 @@ export class Pipe {
    * Return the string representation of this pipe (e.g. `[pipe]`).
    */
   toString() {
+    if (this.name === '') {
+      return '';
+    }
     return `[${this.name}]`;
   }
 
@@ -518,7 +521,7 @@ export class ChainNode implements Iterable<Pipe> {
       if (src.length < connectedPipeCount) {
         throw new Error(`No enough pipe to fork as input`);
       }
-      const fork = new ChainNode(this.helper, src.slice(0, connectedPipeCount));
+      const fork = new ChainNode(this.helper, this.helper.clonePipeReferences(src.slice(0, connectedPipeCount)));
       return fork;
     }
     const forkSources: Pipe[] = [];
@@ -948,6 +951,13 @@ interface TrackingPipeReferenceGroup {
   splitter?: () => Pipe;
 }
 
+/**
+ * Filtergraph exports.
+ * 
+ * Passing an array will rename them as `[out0]`, `[out1]` and so on.
+ */
+export type FiltergraphExports = Pipe[] | Record<string, Pipe>;
+
 class FilterComplexHelper {
   anonymousPipeCounter = 0;
   trackingPipes = new Set<Pipe>();
@@ -993,6 +1003,10 @@ class FilterComplexHelper {
 
   asPipeReferences(pipes: Pipe[]) {
     return pipes.map((pipe) => this.asPipeReference(pipe));
+  }
+
+  clonePipeReferences(pipeReferences: PipeReference[]) {
+    return pipeReferences.map(([pipe]) => this.asPipeReference(pipe));
   }
 
   createChain(source: Pipe[]) {
@@ -1174,7 +1188,7 @@ class FilterComplexHelper {
     const nameMap = new Map<string, Pipe>();
     this.trackingPipes.forEach((pipe) => {
       const { boundInput, boundOutput, name } = pipe;
-      if (boundInput || boundOutput) {
+      if (name !== '' && (boundInput || boundOutput)) {
         const sameNamePipe = nameMap.get(name);
         if (sameNamePipe) {
           throw new Error(`Pipe with the same name: ${pipe.inspect()} and ${sameNamePipe.inspect()}`);
@@ -1208,12 +1222,18 @@ class FilterComplexHelper {
       .join(';');
   }
 
-  complete(exports?: Record<string, Pipe>) {
+  complete(exports?: FiltergraphExports) {
     if (this.completed) {
       throw new Error(`Completed filtergraph`);
     }
     if (exports) {
-      for (const [newName, pipe] of Object.entries(exports)) {
+      let renameGroups: [string, Pipe][];
+      if (Array.isArray(exports)) {
+        renameGroups = exports.map((pipe, index) => [`out${index}`, pipe]);
+      } else {
+        renameGroups = Object.entries(exports);
+      }
+      for (const [newName, pipe] of renameGroups) {
         const pipeReference = this.asPipeReference(pipe);
         const dereferencedPipe = this.dereferencePipeForBound(pipeReference);
         const renamedPipe = this.renamePipe(dereferencedPipe, newName);
@@ -1226,28 +1246,33 @@ class FilterComplexHelper {
   }
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<any> {
+  return !!value && (typeof value === 'object' || typeof value === 'function') && typeof (value as Promise<any>).then === 'function';
+}
+
 /**
  * Invoke the specified function `f` within a special context and return the generated [filtergraph](https://ffmpeg.org/ffmpeg-filters.html#Filtergraph-syntax-1).
  * 
- * Pipes returned by `f` will be named and exported.
+ * Pipes returned by `f` will be named and exported, and can be used in `-map`.
  * 
  * If `f` is not provided, the special context returns instead. 
  */
-export function filterComplex(f: (c: Readonly<FilterComplexContext>) => void | Record<string, Pipe>): string;
-export function filterComplex(f: (c: Readonly<FilterComplexContext>) => Promise<void | Record<string, Pipe>>): Promise<string>;
-export function filterComplex(): Readonly<FilterComplexContext> & { complete: (exports?: Record<string, Pipe>) => string };
+export function filterComplex(f: (c: Readonly<FilterComplexContext>) => void | FiltergraphExports): string;
+export function filterComplex(f: (c: Readonly<FilterComplexContext>) => Promise<void | FiltergraphExports>): Promise<string>;
+export function filterComplex(f: (c: Readonly<FilterComplexContext>) => PromiseLike<void | FiltergraphExports>): PromiseLike<string>;
+export function filterComplex(): Readonly<FilterComplexContext> & { complete: (exports?: FiltergraphExports) => string };
 export function filterComplex(
-  f?: (c: Readonly<FilterComplexContext>) => void | Record<string, Pipe> | Promise<void | Record<string, Pipe>>
+  f?: (c: Readonly<FilterComplexContext>) => void | FiltergraphExports | PromiseLike<void | FiltergraphExports>
 ) {
   const helper = new FilterComplexHelper();
   const context = helper.getContext();
-  const complete = (exports?: Record<string, Pipe>) => helper.complete(exports);
+  const complete = (exports?: FiltergraphExports) => helper.complete(exports);
   if (f) {
     const result = f(context);
-    if (typeof result?.then === 'function') {
-      return result.then(complete as (exports: void | Record<string, Pipe>) => string);
+    if (isPromiseLike(result)) {
+      return result.then(complete as (exports: void | FiltergraphExports) => string);
     }
-    return complete(result as undefined | Record<string, Pipe>);
+    return complete(result as undefined | FiltergraphExports);
   }
   return Object.assign(context, { complete });
 }

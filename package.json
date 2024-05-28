@@ -6,7 +6,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node ./dist/test.js",
+    "test": "tsx test.ts",
     "generate-docs": "typedoc"
   },
   "keywords": [
@@ -30,6 +30,7 @@
   "homepage": "https://github.com/XeroAlpha/ffmpeg-filter-compose",
   "devDependencies": {
     "@types/node": "^20.11.21",
+    "tsx": "^4.11.0",
     "typedoc": "^0.25.13",
     "typescript": "^5.3.3"
   }
