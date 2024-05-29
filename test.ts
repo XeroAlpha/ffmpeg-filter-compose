@@ -1,7 +1,7 @@
 import { strict as assert } from 'assert';
-import { FilterComplexContext, filterComplex } from './index';
+import { FilterComplexContext, filterComplex } from 'ffmpeg-filter-compose';
 
-declare module './index' {
+declare module 'ffmpeg-filter-compose' {
     interface FilterComplexContext {
         select: (input: Pipe, expr: string) => Iterable<Pipe>;
     }

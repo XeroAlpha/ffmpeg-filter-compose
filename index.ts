@@ -162,7 +162,7 @@ export class Pipe {
       return this;
     }
     if (this.mediaType !== 'unknown') {
-      throw new Error(`Cannot mark this pipe as ${mediaType}, since it has been marked as ${this.mediaType}`);
+      throw new Error(`Cannot mark this pipe as ${mediaType}, since it has been marked as ${this.mediaType}: ${this.inspect()}`);
     }
     this.mediaType = mediaType;
     return this;
@@ -367,7 +367,7 @@ export class Filter {
    */
   constructor(name: string, args: FilterArgument[]) {
     this.name = name;
-    if (args.length > 0) {
+    if (args.length > 0 && !(args.length === 1 && (args[0] === undefined || args[0] === null))) {
       this.arguments = parseFilterArguments(args);
     }
   }
@@ -386,7 +386,7 @@ export class Filter {
    * Update the arguments for this filter.
    */
   setArguments(...args: FilterArgument[]) {
-    if (args.length > 0) {
+    if (args.length > 0 && !(args.length === 1 && (args[0] === undefined || args[0] === null))) {
       this.arguments = parseFilterArguments(args);
     } else {
       this.arguments = undefined;
@@ -1070,6 +1070,7 @@ class FilterComplexHelper {
     for (const output of chain) {
       outputCount += 1;
       filter.arguments = outputCount === 2 ? undefined : `${outputCount}`;
+      output.mark(pipe.mediaType);
       yield output;
     }
   }
@@ -1082,10 +1083,11 @@ class FilterComplexHelper {
     chain.filter = filter;
     let outputCount = 0;
     const splitter = () => {
-      const pipe = chain.getOutputPipe(outputCount);
+      const newPipe = chain.getOutputPipe(outputCount);
       outputCount += 1;
       filter.arguments = outputCount === 2 ? undefined : `${outputCount}`;
-      return pipe;
+      newPipe.mark(pipe.mediaType);
+      return newPipe;
     };
     const replacementPipe = splitter();
     pipeReference[0] = replacementPipe;

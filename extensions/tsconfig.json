@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "files": ["./dist/index.d.ts", "./dist/index.js", "../index.ts", "./test.ts"],
+  "compilerOptions": {
+    "allowJs": true,
+    "paths": {
+      "ffmpeg-filter-compose": ["../index.ts"],
+      "ffmpeg-filter-compose-extension": ["./dist/index"]
+    }
+  }
+}
