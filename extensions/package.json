@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-filter-compose-extension",
-  "version": "6.0.0",
+  "version": "7.0.1",
   "description": "Extension for FFmpeg filtergraph generator",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -26,5 +26,5 @@
   "bugs": {
     "url": "https://github.com/XeroAlpha/ffmpeg-filter-compose/issues"
   },
-  "homepage": "https://github.com/XeroAlpha/ffmpeg-filter-compose"
+  "homepage": "https://github.com/XeroAlpha/ffmpeg-filter-compose/tree/main/extensions"
 }

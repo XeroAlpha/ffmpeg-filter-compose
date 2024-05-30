@@ -38,6 +38,7 @@ jobs:
         npm run build
         npm run test
         npm run generate-docs
+        cp -r ./images ./docs/
     
     - name: Setup GitHub Pages
       id: pages_setup

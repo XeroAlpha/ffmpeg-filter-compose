@@ -292,6 +292,7 @@ const avTypeToTs: Record<string, string> = {
 
 const toPascalCase = (s: string) => s.replace(/(?:^|_|\W)(\w|$)/g, (_, ch) => ch.toUpperCase());
 const toCamelCase = (s: string) => s.replace(/(?:_|\W)(\w|$)/g, (_, ch) => ch.toUpperCase());
+const toFilterDocAnchor = (name: string) => name.replace(/_/g, '_005f');
 
 function template(filterInfo: FilterDetailedInfo) {
     const classOptionsDts: string[] = [];
@@ -301,7 +302,8 @@ function template(filterInfo: FilterDetailedInfo) {
         const classIdentifier = toPascalCase(filterClass.name);
         const optLines: string[] = [];
         optLines.push('/**');
-        optLines.push(` * Options for AVClass ${filterClass.name}`);
+        optLines.push(` * Options for AVClass ${filterClass.name}.`);
+        optLines.push(` * [Official Documentation](https://ffmpeg.org/ffmpeg-filters.html#${toFilterDocAnchor(filterInfo.name)})`);
         optLines.push(' */');
         if (filterClass.options.length > 0) {
             optLines.push(`export interface ${classIdentifier}Options {`);
@@ -353,7 +355,7 @@ function template(filterInfo: FilterDetailedInfo) {
     dtsLines.push(`${tab}${tab}/**`);
     dtsLines.push(`${tab}${tab} * AVFilter \`${filterInfo.name}\`.`);
     dtsLines.push(`${tab}${tab} * ${filterInfo.description}`);
-    dtsLines.push(`${tab}${tab} * [Official Documentation](https://ffmpeg.org/ffmpeg-filters.html#${filterInfo.name})`);
+    dtsLines.push(`${tab}${tab} * [Official Documentation](https://ffmpeg.org/ffmpeg-filters.html#${toFilterDocAnchor(filterInfo.name)})`);
     dtsLines.push(`${tab}${tab} */`);
     const dtsInputArguments: string[] = [];
     const jsInputArguments: string[] = [];
