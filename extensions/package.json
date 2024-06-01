@@ -26,5 +26,8 @@
   "bugs": {
     "url": "https://github.com/XeroAlpha/ffmpeg-filter-compose/issues"
   },
-  "homepage": "https://github.com/XeroAlpha/ffmpeg-filter-compose/tree/main/extensions"
+  "homepage": "https://github.com/XeroAlpha/ffmpeg-filter-compose/tree/main/extensions",
+  "peerDependencies": {
+    "ffmpeg-filter-compose": "^1.3.0"
+  }
 }

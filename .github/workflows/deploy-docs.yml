@@ -34,8 +34,7 @@ jobs:
 
     - name: Install and build
       run: |
-        npm install
-        npm run build
+        npm ci
         npm run test
         npm run generate-docs
         cp -r ./images ./docs/

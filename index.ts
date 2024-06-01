@@ -1,4 +1,4 @@
-export type FilterArgumentValue = number | string;
+export type FilterArgumentValue = number | string | boolean;
 export type FilterArgument = FilterArgumentValue | Record<string, FilterArgumentValue | FileArgument> | FilterArgumentValue[];
 export type FilterFunction = (...args: FilterArgument[]) => Filter;
 export interface IterableStreamLikeArray<T> extends Iterable<T> {
@@ -13,7 +13,9 @@ export interface IterableStreamLikeArray<T> extends Iterable<T> {
   pick(count: number): T[];
 }
 export type InputFileStreamMap = IterableStreamLikeArray<Pipe> & Record<string, Pipe>;
-export type FilterMap = Record<string, FilterFunction>;
+export interface FilterMap {
+  [name: string]: FilterFunction;
+};
 
 /**
  * Context object for filtergraph generation.
@@ -314,6 +316,7 @@ export class FileArgument {
 const FileArgumentFactory = (path: string) => new FileArgument(path);
 
 export function escapeFilterArgumentValue(value: FilterArgumentValue): string {
+  if (typeof value === 'boolean') return value ? '1' : '0';
   return String(value).replace(/[\\:']/g, '\\$&');
 }
 
@@ -406,14 +409,28 @@ export class Filter {
   }
 }
 
-const FilterNameSymbol = Symbol('filterName');
-type FilterFunctionInternal = FilterFunction & { [FilterNameSymbol]: string }
+function getFilterName(filter: string | Filter | FilterFunction) {
+  if (typeof filter === 'string') {
+    return filter;
+  }
+  if (typeof filter === 'object' && filter instanceof Filter) {
+    return filter.toString();
+  }
+  if (typeof filter === 'function') {
+    return filter.name;
+  }
+  throw new Error(`Not a filter: ${filter}`);
+}
+
 const FilterProxy = createCachedGetterProxy<Record<string, FilterFunction>>({}, (filterName) => {
   const filterFunc = (...args: FilterArgument[]) => {
     return new Filter(filterName as string, args);
   };
-  filterFunc[FilterNameSymbol] = filterName;
-  return filterFunc as FilterFunctionInternal;
+  Object.defineProperty(filterFunc, 'name', {
+    configurable: true,
+    value: filterName
+  });
+  return filterFunc;
 });
 const NullFilterMap: Partial<Record<PipeMediaType, Filter>> = {
   video: FilterProxy.null(),
@@ -883,11 +900,7 @@ export class CommandIntervalBuilder {
    */
   on(flags: string | string[], target: string | FilterFunction | Filter, command: string, ...args: FilterArgument[]) {
     const flagStr = Array.isArray(flags) ? flags.join('+') : flags;
-    const targetStr = typeof target === 'string'
-      ? target
-      : target instanceof Filter
-        ? target.toString()
-        : (target as FilterFunctionInternal)[FilterNameSymbol];
+    const targetStr = getFilterName(target);
     const argStr = parseFilterArguments(args);
     this.commands.push({ flags: flagStr, target: targetStr, command, arg: argStr });
     return this;
@@ -1139,10 +1152,15 @@ class FilterComplexHelper {
       filter: FilterProxy,
       fileArgument: FileArgumentFactory,
     } as Partial<FilterComplexContext>;
-    Object.entries(FilterComplexContext).forEach(([k, v]) => {
+    Object.entries(FilterComplexContext).forEach(([k, v]: [string, unknown]) => {
       let value = v;
       if (typeof value === 'function') {
+        const originalFunction = value;
         value = value.bind(ctx);
+        Object.defineProperty(value, 'name', {
+          configurable: true,
+          value: originalFunction.name
+        });
       }
       (ctx as any)[k] = value;
     });
